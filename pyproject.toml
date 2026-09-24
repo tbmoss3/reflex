@@ -1,0 +1,19 @@
+[project]
+name = "reflex-layer"
+version = "0.1.0"
+description = "Reflex: the intelligence layer between your agent harness and frontier-model calls — calibrated decision models, four-agent execution, self-training on your traffic."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+l1 = ["torch", "transformers>=4.50", "peft", "sentencepiece"]
+serve = ["vllm>=0.10"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["reflex", "reflex.adapters"]
