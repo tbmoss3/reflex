@@ -166,7 +166,8 @@ def operator(task, determination, deliverable, model, execute=False):
         return {"dry_run": True, "proposal": out}
     # v0.1: execution path is intentionally unimplemented — requires L0 grant-check integration
     # with the terminal tool + human approval for irreversible classes. v0.1 ships proposals only.
-    return {"dry_run": True, "proposal": out, "note": "execution lands in v0.2 with L0 integration"}
+    return {"dry_run": True, "proposal": out,
+                "note": "execution available via reflex.operator_exec (reversible-only, L0-grant-checked, snapshotted)"}
 
 # ---------------- Orchestration ----------------
 def run_task(task, execute=False):
