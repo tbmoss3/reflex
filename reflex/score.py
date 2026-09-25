@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Reflex v0.5 local scorer — L1 inference for the gateway hook.
-Scores a request against the skill-gate heads (first_tool 13-way + needs_full_agent)
-using the trained Gemma-3-1B LoRA. CPU-friendly (1B, bf16->fp32 CPU or small GPU slice).
-Loads once, serves via stdin/argv or as an import. Ledger rows get REAL answers+confidence.
-"""
-import json, os, sys, time
+"""L1 scorer v2 — calls the pod-served reflex-v05 (vllm) with the EXACT trained prompt,
+extracts probabilities from top-logprobs at the answer position. Replaces local-CPU scoring
+(this host has 1GB RAM; the 1B model serves on the RunPod 4090)."""
+import json, os, sys, time, urllib.request
 
-ADAPTER = "/home/hermes/repos/teloplex/brain/reflex-data/adapters_backup/v05mt_local/reflex_v05mt/lora"
-BASE = "unsloth/gemma-3-1b-it"
+L1_URL = os.environ.get("REFLEX_L1_URL", "http://localhost:8002/v1/chat/completions")
+MODEL = os.environ.get("REFLEX_L1_MODEL", "reflex-v05")
 
 SKILLGATE_OPTS = ["run_commands","read_files","find_files","edit_files","load_skill",
                   "schedule","web_research","discord","memory_ops","plan","run_code",
@@ -33,54 +31,58 @@ def build_prompt(request_text):
             f"Options:\n{crit_s}\n\nRequest:\n{request_text[:1200]}\n\n"
             f"Answer with exactly one of: {', '.join(SKILLGATE_OPTS)}.\nAnswer:")
 
-_MODEL = None
-def get_model():
-    global _MODEL
-    if _MODEL is not None:
-        return _MODEL
-    import torch
-    from transformers import AutoTokenizer, AutoModelForCausalLM
-    from peft import PeftModel
-    tok = AutoTokenizer.from_pretrained(BASE)
-    base = AutoModelForCausalLM.from_pretrained(BASE, torch_dtype=torch.float32, device_map="cpu")
-    m = PeftModel.from_pretrained(base, ADAPTER)
-    m.eval()
-    _MODEL = (tok, m)
-    return _MODEL
+def _call(prompt, max_tokens=1):
+    body = json.dumps({"model": MODEL, "messages": [{"role": "user", "content": prompt}],
+                       "max_tokens": max_tokens, "temperature": 0,
+                       "logprobs": True, "top_logprobs": 20}).encode()
+    req = urllib.request.Request(L1_URL, data=body, headers={"Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(req, timeout=60))
 
 def score(request_text):
-    """Returns {first_tool, probabilities, confidence, needs_full_agent_p}."""
-    import torch, torch.nn.functional as F, math
-    tok, m = get_model()
+    import math
     prompt = build_prompt(request_text)
-    enc = tok(prompt, return_tensors="pt", truncation=True, max_length=768)
-    with torch.no_grad():
-        logits = m(**enc).logits[0, -1, :].float()
-    lsm = F.log_softmax(logits, dim=-1)
-    scores = []
-    for opt in SKILLGATE_OPTS:
-        ids = tok(" "+opt, add_special_tokens=False).input_ids
-        s = sum(lsm[i].item() for i in ids) / max(1, len(ids))
-        scores.append(s)
-    mx = max(scores); e = [math.exp(x-mx) for x in scores]; Z = sum(e)
-    probs = [x/Z for x in e]
-    best = probs.index(max(probs))
-    # needs_full_agent: append the binary question
+    r = _call(prompt)
+    msg = r["choices"][0]
+    # option scores from top_logprobs at the first generated position
+    lps = msg.get("logprobs", {}).get("content", [{}])[0].get("top_logprobs", [])
+    lp_map = {}
+    for lp in lps:
+        raw = lp["token"]
+        tok = raw.strip().lower().lstrip("▁▁ ").lstrip(" ")
+        prob = math.exp(lp["logprob"])
+        if not tok: continue
+        # exact match first
+        matched = [o for o in SKILLGATE_OPTS if tok == o.lower()]
+        if not matched:
+            # prefix: token is the start of an option ("web" -> web_research) or vice versa
+            matched = [o for o in SKILLGATE_OPTS if len(tok) >= 2 and (o.lower().startswith(tok) or tok.startswith(o.lower()))]
+        if not matched:
+            # first word of multiword option
+            matched = [o for o in SKILLGATE_OPTS if len(tok) >= 4 and o.lower().split("_")[0].startswith(tok[:4])]
+        for m in matched:
+            lp_map[m] = lp_map.get(m, 0) + prob  # sum across fragments
+    Z = sum(lp_map.values()) or 1.0
+    probs = {k: lp_map.get(k, 1e-9)/Z for k in SKILLGATE_OPTS}
+    best = max(probs, key=lambda k: probs[k])
+    # needs_full_agent head
     nprompt = prompt + "\nDoes this need the full agent loop (multi-step reasoning) rather than a single cheap handler? Answer yes or no.\nAnswer:"
-    nenc = tok(nprompt, return_tensors="pt", truncation=True, max_length=768)
-    with torch.no_grad():
-        nlog = m(**nenc).logits[0, -1, :].float()
-    nl = F.log_softmax(nlog, dim=-1)
-    yes_id = tok(" yes", add_special_tokens=False).input_ids[0]
-    no_id = tok(" no", add_special_tokens=False).input_ids[0]
-    py, pn = math.exp(nl[yes_id].item()), math.exp(nl[no_id].item())
+    nr = _call(nprompt, max_tokens=1)
+    nmsg = nr["choices"][0]
+    nlps = nmsg.get("logprobs", {}).get("content", [{}])[0].get("top_logprobs", [])
+    py = pn = 1e-9
+    for lp in nlps:
+        t = lp["token"].strip().lower().lstrip("▁▁ ")
+        if t.startswith("yes"): py = max(py, math.exp(lp["logprob"]))
+        elif t.startswith("no"): pn = max(pn, math.exp(lp["logprob"]))
     p_yes = py/(py+pn)
-    return {"first_tool": SKILLGATE_OPTS[best], "probabilities": dict(zip(SKILLGATE_OPTS, probs)),
-            "confidence": probs[best], "needs_full_agent_p": p_yes}
+    return {"first_tool": best, "confidence": round(probs[best], 4),
+            "probabilities": {k: round(v,4) for k,v in probs.items()},
+            "needs_full_agent_p": round(p_yes, 4),
+            "raw_first_token": (msg["message"]["content"] or "").strip()[:30]}
 
 if __name__ == "__main__":
     req = sys.stdin.read().strip()
     t0 = time.time()
     out = score(req)
     out["latency_s"] = round(time.time()-t0, 2)
-    print(json.dumps(out))
+    print(json.dumps(out, indent=1))
