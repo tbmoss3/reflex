@@ -8,7 +8,7 @@ MUST be run with CSP_ON=1. Caps at 3 skips per tick (rate limit while validating
 import os, sys, json, sqlite3, time, hashlib, re, urllib.request, subprocess
 
 CSP_ON = os.environ.get("CSP_ON") == "1"
-L2_URL = "http://localhost:8001/v1/chat/completions"
+L2_URL = os.environ.get("REFLEX_L2_URL", "http://localhost:8001/v1/chat/completions")
 LEDGER = os.path.expanduser("~/.hermes/reflex/ledger.db")
 MAX_PER_TICK = 3
 ELIGIBLE_TOOLS = {"read_files": "read_file", "find_files": "search_files",
