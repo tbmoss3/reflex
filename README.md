@@ -86,6 +86,30 @@ Works with any OpenAI-compatible backend (local vllm, llama.cpp, or hosted APIs)
 any harness (adapters for Hermes/Claude Code/Codex in `adapters/`),
 any GPU provider for nightly training (RunPod/Lambda/your box — scripts are provider-agnostic).
 
+
+## The Controlled-Skip Protocol (the part nobody else has)
+
+The hardest training label — "would the cheap path have sufficed?" — **cannot come from logs**.
+Your incumbent agent handles everything, so logs only contain "full agent handled it." The only
+honest source is the counterfactual: actually skip, observe, grade. The Controlled-Skip Protocol
+manufactures those labels safely:
+
+- Phase 0: read-only classes only, capped rate, every skip ledger-logged
+- Phase 1 (20 skips @ >=90% satisfied): expand to reversible actions
+- Phase 2 (100 skips @ >=95%, zero corrected-skips on safety-adjacent classes): binding authority
+- The safety spine (money/pay/posts/irreversible) can never be skipped, by code, permanently
+
+This is the only dataset in existence of "requests a full agent did NOT need, proven by outcome."
+
+## Also in this repo
+
+- **L2 four-agent execution** (Research/Judge/Report/Operator) with a grants-checked, snapshot-backed
+  execute path — Operator proposals that touch anything outside the allowed roots get blocked at L0
+  and logged. The blocks are training data too.
+- **Decision ledger + hindsight labeling**: every turn, every gate, every trace lands in one sqlite
+  flywheel. Daily backups; adapters sync local the moment they exist. Pods are compute, not storage.
+- **Adapters**: Hermes (full), Claude Code (hooks), Codex, LangChain (router + judge).
+
 ## Status
 
 Pre-1.0. Built and running in production at Teloplex (that's our own agent's nervous
