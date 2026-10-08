@@ -122,3 +122,17 @@ We want: harness adapters for more agents, label recipes for new decision types
 labels — hindsight outcomes only), and eval improvements. Read `docs/LABELING.md` first.
 
 — Teloplex
+## Note on the Hermes provider issue (solved)
+
+An earlier note (commit `093ff2b`) flagged an upstream blocker: Hermes' `openrouter` provider pins its `base_url` (it can't be pointed at a local tier gateway), and switching to the generic `custom` provider broke auxiliary compression because the model's context window couldn't be resolved (it fell back to 16,384 tokens).
+
+**Solved — config-only, no upstream patch needed.** The documented override is `model.context_length` in the model block of `config.yaml` (see Hermes' `model_metadata.py`). With:
+
+```yaml
+model:
+  provider: custom
+  base_url: http://127.0.0.1:8012/v1   # your tier gateway
+  context_length: 131072
+```
+
+the full chain works: router gate → tier gateway → local L2 or frontier passthrough. Verified end-to-end (chat, aux compression, tool calls).
